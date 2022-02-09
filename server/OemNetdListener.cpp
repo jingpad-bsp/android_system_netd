@@ -17,7 +17,13 @@
 #define LOG_TAG "OemNetd"
 
 #include "OemNetdListener.h"
-
+#include "InterfaceController.h"
+#include "NetdConstants.h"
+#include "RouteController.h"
+#include "Controllers.h"
+#include "ExtDataController.h"
+#include "TcpSocket2Monitor.h"
+using android::net::gCtls;
 namespace com {
 namespace android {
 namespace internal {
@@ -37,7 +43,37 @@ namespace net {
 }
 
 ::android::binder::Status OemNetdListener::isAlive(bool* alive) {
+    ALOGD("OemNetd: isAlive return true");
     *alive = true;
+    return ::android::binder::Status::ok();
+}
+
+::android::binder::Status OemNetdListener::setIpv6Mtu(const std::string& ifName, int32_t ipv6MtuValue) {
+    ALOGD("setIpv6Mtu");
+    std::string ipv6Mtu = std::to_string(ipv6MtuValue);
+
+    ::android::net::InterfaceController::setIpv6Mtu(ifName.c_str(), ipv6Mtu.c_str());
+    return ::android::binder::Status::ok();
+}
+
+::android::binder::Status OemNetdListener::sendExtDatacmdsToNetd(const ::std::string& cmd, int32_t* ret) {
+    ALOGW("extDataCmds");
+    gCtls->extdataCtl.parseExtDataCmd(cmd);
+    *ret = 10;
+    return ::android::binder::Status::ok();
+}
+/*set dns filter*/
+::android::binder::Status OemNetdListener::setDnsFilterEnable(int32_t enable, int32_t* ret) {
+    ALOGW("setDnsFilterEnable(%d)",enable);
+    gCtls->extdataCtl.setDnsFilterEnable(enable);
+    *ret = 10;
+    return ::android::binder::Status::ok();
+}
+
+/* Run Iptables or ip cmds etc. */
+::android::binder::Status OemNetdListener::runCmds(const std::string& cmd){
+    //ALOGD("runCmds %s", cmd.c_str());
+    execOemCmds(cmd);
     return ::android::binder::Status::ok();
 }
 
@@ -80,7 +116,13 @@ void OemNetdListener::unregisterOemUnsolicitedEventListenerInternal(
     std::lock_guard lock(mOemUnsolicitedMutex);
     mOemUnsolListenerMap.erase(listener);
 }
-
+::android::binder::Status OemNetdListener::getNetlinkTcpInfoStats(::android::String16* rttStr) {
+     ALOGD("OemNetdListener:getNetlinkTcpInfo");
+     gCtls->tS2Monitor.getTcpInfo(rttStr);
+     ALOGD("OemNetdListener:getNetlinkTcpInfo + %s ",(char*)(rttStr->string()));
+    //return gCtls->tS2Monitor.getTcpInfo(bundle);
+    return ::android::binder::Status::ok();
+}
 }  // namespace net
 }  // namespace internal
 }  // namespace android

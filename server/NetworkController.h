@@ -25,7 +25,9 @@
 #include "Permission.h"
 #include "android/net/INetd.h"
 #include "netdutils/DumpWriter.h"
+#include "SockDiag.h"
 
+#include <cutils/properties.h>
 #include <sys/types.h>
 #include <list>
 #include <map>
@@ -36,6 +38,9 @@
 #include <vector>
 
 struct android_net_context;
+
+extern "C" int get_ipv4_ifaddr(const char *ifname, in_addr_t *addr);
+extern "C" int get_ipv6_globaladdr(const char *ifname,char *addrstr2);
 
 namespace android {
 namespace net {
@@ -62,7 +67,13 @@ static inline unsigned netHandleToNetId(net_handle_t fromNetHandle) {
 
     return ((fromNetHandle >> (CHAR_BIT * sizeof(k32BitMask))) & k32BitMask);
 }
-
+static bool isSmartLinkSupported()
+{
+    char wlan_plus_on[PROPERTY_VALUE_MAX] = {0};
+    property_get("ro.wifi.sup_sprd.wlan_plus", wlan_plus_on, "false");
+    return !strcmp("true", wlan_plus_on);
+}
+static bool isSmartLinkEnabled = isSmartLinkSupported();
 // Utility to convert from nethandle to netid, keep in sync with getNetworkHandle
 // in Network.java.
 static inline net_handle_t netIdToNetHandle(unsigned fromNetId) {

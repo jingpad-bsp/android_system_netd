@@ -13,7 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 #include "FwmarkServer.h"
 
 #include <netinet/in.h>
@@ -115,7 +114,13 @@ int FwmarkServer::processClient(SocketClient* client, int* socketFd) {
     }
 
     Permission permission = mNetworkController->getPermissionForUser(client->getUid());
-
+    //add PERMISSION_NETWORK to current permission !!!
+   // ALOGD("***********add PERMISSION_NETWORK to current permission !!!**************");
+    if(isSmartLinkEnabled)
+    {
+        //ALOGD("***********Smart link feature is supported!!!**************");
+        permission = Permission(permission |PERMISSION_NETWORK);
+    }
     if (command.cmdId == FwmarkCommand::QUERY_USER_ACCESS) {
         if ((permission & PERMISSION_SYSTEM) != PERMISSION_SYSTEM) {
             return -EPERM;

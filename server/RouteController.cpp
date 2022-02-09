@@ -102,6 +102,8 @@ const bool MODIFY_NON_UID_BASED_RULES = true;
 const char* const RT_TABLES_PATH = "/data/misc/net/rt_tables";
 const mode_t RT_TABLES_MODE = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH;  // mode 0644, rw-r--r--
 
+const int RETRY_TIMES = 2;
+
 // Avoids "non-constant-expression cannot be narrowed from type 'unsigned int' to 'unsigned short'"
 // warnings when using RTA_LENGTH(x) inside static initializers (even when x is already uint16_t).
 constexpr uint16_t U16_RTA_LENGTH(uint16_t x) {
@@ -454,9 +456,14 @@ WARN_UNUSED_RESULT int modifyIncomingPacketMark(unsigned netId, const char* inte
     std::string cmd = StringPrintf(
         "%s %s -i %s -j MARK --set-mark 0x%x/0x%x", add ? "-A" : "-D",
         RouteController::LOCAL_MANGLE_INPUT, interface, fwmark.intValue, mask);
-    if (RouteController::iptablesRestoreCommandFunction(V4V6, "mangle", cmd, nullptr) != 0) {
-        ALOGE("failed to change iptables rule that sets incoming packet mark");
-        return -EREMOTEIO;
+    for (int i = 0; i < RETRY_TIMES; i++) {
+        if (RouteController::iptablesRestoreCommandFunction(V4V6, "mangle", cmd, nullptr) != 0) {
+            ALOGE("failed to change iptables rule that sets incoming packet mark");
+            ALOGE("failed to execute the iptables cmd, %s ", cmd.c_str());
+            //return -EREMOTEIO;
+        } else {
+            break;
+        }
     }
 
     return 0;

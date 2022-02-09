@@ -90,6 +90,8 @@ cc_library_static {
         "UidRanges.cpp",
         "WakeupController.cpp",
         "XfrmController.cpp",
+        "ExtDataController.cpp",
+	"TcpSocket2Monitor.cpp",
     ],
     shared_libs: [
         "libbpf_android",

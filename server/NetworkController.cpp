@@ -31,6 +31,7 @@
 #include <cutils/misc.h>  // FIRST_APPLICATION_UID
 #include <netd_resolv/resolv.h>
 #include <netd_resolv/resolv_stub.h>
+#include <netutils/ifc.h>
 #include "log/log.h"
 
 #include "Controllers.h"
@@ -42,10 +43,61 @@
 #include "VirtualNetwork.h"
 #include "netdutils/DumpWriter.h"
 #include "netid_client.h"
+#include "SockDiag.h"
 
-#define DBG 0
+#define DBG 1
 
 using android::netdutils::DumpWriter;
+
+int get_ipv4_ifaddr(const char *ifname, in_addr_t *addr) {
+    ifc_init();
+    if (ifc_get_addr(ifname, addr)) {
+        ALOGE("Can't get the ipv4 address of interface %s : %s\n", ifname, strerror(errno));
+        ifc_close();
+        return -1;
+    }
+    ifc_close();
+
+    return 0;
+}
+
+int get_ipv6_globaladdr(const char *ifname,char *ipv6addr) {
+    char addrstr[48];
+    char name[64];
+    FILE *f;
+
+    f = fopen("/proc/net/if_inet6", "r");
+    if (f == NULL) {
+        ALOGE("Fail to open /proc/net/if_inet6: %s\n", strerror(errno));
+        return 0;
+    }
+
+    /* Format:
+     * 20010db8000a0001fc446aa4b5b347ed 03 40 00 01    wlan0
+     */
+    while (fscanf(f, "%32s %*02x %*02x %*02x %*02x %63s\n",
+        addrstr, name) == 2) {
+        if (strcmp(name, ifname))
+            continue;
+
+        if (strncmp(addrstr, "fe80", sizeof("fe80")-1) != 0) {
+            ALOGD("Get %s's ipv6 global address: %s\n", ifname, addrstr);
+            sprintf(ipv6addr,"%c%c%c%c:%c%c%c%c:%c%c%c%c:%c%c%c%c:%c%c%c%c:%c%c%c%c:%c%c%c%c:%c%c%c%c",
+                     addrstr[0],addrstr[1],addrstr[2],addrstr[3],
+                     addrstr[4],addrstr[5],addrstr[6],addrstr[7],
+                     addrstr[8],addrstr[9],addrstr[10],addrstr[11],
+                     addrstr[12],addrstr[13],addrstr[14],addrstr[15],
+                     addrstr[16],addrstr[17],addrstr[18],addrstr[19],
+                     addrstr[20],addrstr[21],addrstr[22],addrstr[23],
+                     addrstr[24],addrstr[25],addrstr[26],addrstr[27],
+                     addrstr[28],addrstr[29],addrstr[30],addrstr[31]);
+           fclose(f);
+           return 0;
+        }
+    }
+    fclose(f);
+    return 1;
+}
 
 namespace android {
 namespace net {
@@ -312,7 +364,14 @@ void NetworkController::getNetworkContext(
     fwmark.netId = nc.app_netid;
     fwmark.explicitlySelected = explicitlySelected;
     fwmark.protectedFromVpn = explicitlySelected && canProtectLocked(uid);
-    fwmark.permission = getPermissionForUserLocked(uid);
+    if(isSmartLinkEnabled)
+    {
+        fwmark.permission = Permission(getPermissionForUserLocked(uid) |PERMISSION_NETWORK);
+    }
+    else
+    {
+        fwmark.permission = getPermissionForUserLocked(uid) ;
+    }
     nc.app_mark = fwmark.intValue;
 
     nc.dns_mark = getNetworkForDnsLocked(&(nc.dns_netid), uid);
@@ -441,8 +500,57 @@ int NetworkController::destroyNetwork(unsigned netId) {
     }
 
     // TODO: ioctl(SIOCKILLADDR, ...) to kill all sockets on the old network.
-
+    ALOGD("destroyNetwork for netid %d",netId);
     Network* network = getNetworkLocked(netId);
+
+    //destroy all sockets before delete route
+    for (const auto& phyInt : network->getInterfaces()){
+        in_addr_t ifaddr;
+        char localip[32];
+        char ipv6addr[48];
+        int ret;
+
+        //only destroy sockets for mobile network
+        if (strncmp(phyInt.c_str(),"eth",4)) {
+            break;
+        }
+
+        ret = get_ipv4_ifaddr(phyInt.c_str(),&ifaddr);
+        if (ret == 0) {
+            SockDiag sd;
+            if (sd.open()) {
+                inet_ntop(AF_INET, &ifaddr, localip, sizeof localip);
+                ALOGD("destroyNetwork:close all ipv4 sockets %s",localip);
+                ret = sd.destroySockets(localip);
+                if (ret < 0) {
+                    ALOGE("destroyNetwork: Error destroying sockets for ipv4: %s", strerror(-ret));
+                }
+             } else {
+                ALOGE("destroyNetwork: fail to open SockDiag for ipv4");
+             }
+        } else {
+            ALOGE("destroyNetwork:fail to get ipv4 address!");
+        }
+
+        ret = get_ipv6_globaladdr(phyInt.c_str(),ipv6addr);
+        if (ret == 0) {
+            SockDiag sd;
+            if (sd.open()) {
+                ALOGE("destroyNetwork:close all ipv6 sockets %s", ipv6addr);
+                int ret = sd.destroySockets(ipv6addr);
+                if (ret < 0) {
+                    ALOGE("destroyNetwork: Error destroying sockets for ipv6: %s", strerror(-ret));
+                }
+            } else {
+                ALOGE("destroyNetwork: SockDiag Not opened for ipv6!");
+            }
+        } else {
+            ALOGE("destroyNetwork: get no ipv6 address!");
+        }
+    }
+
+    ALOGD("sleep 200ms before clear route");
+    usleep(200000);
 
     // If we fail to destroy a network, things will get stuck badly. Therefore, unlike most of the
     // other network code, ignore failures and attempt to clear out as much state as possible, even
@@ -760,6 +868,12 @@ int NetworkController::checkUserNetworkAccessLocked(uid_t uid, unsigned netId) c
         return -EREMOTEIO;
     }
     Permission userPermission = getPermissionForUserLocked(uid);
+    //ALOGD("***********add PERMISSION_NETWORK to current permission !!!**************");
+    if(isSmartLinkEnabled)
+    {
+        //ALOGD("***********Smart link feature is supported!!!**************");
+        userPermission = Permission(userPermission |PERMISSION_NETWORK);
+    }
     if ((userPermission & PERMISSION_SYSTEM) == PERMISSION_SYSTEM) {
         return 0;
     }
